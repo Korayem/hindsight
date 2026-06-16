@@ -5,6 +5,7 @@ import os
 
 from lib.content import (
     compose_recall_query,
+    filter_memories_by_score,
     format_current_time,
     format_memories,
     prepare_retention_transcript,
@@ -171,6 +172,20 @@ class TestSliceLastTurns:
 
 
 class TestFormatMemories:
+    def test_filter_memories_by_score_keeps_threshold_and_above(self):
+        results = [
+            {"text": "weak", "score": 0.24},
+            {"text": "edge", "score": 0.25},
+            {"text": "strong", "score": 0.9},
+        ]
+        out = filter_memories_by_score(results, 0.25)
+        assert [r["text"] for r in out] == ["edge", "strong"]
+
+    def test_filter_memories_by_score_passes_missing_score_through(self):
+        results = [{"text": "missing"}, {"text": "zero", "score": 0.0}]
+        assert [r["text"] for r in filter_memories_by_score(results, 0.25)] == ["missing"]
+        assert [r["text"] for r in filter_memories_by_score(results, 0.0)] == ["missing", "zero"]
+
     def test_empty(self):
         assert format_memories([]) == ""
 

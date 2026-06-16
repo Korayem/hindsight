@@ -406,6 +406,29 @@ def slice_last_turns_by_user_boundary(messages, turns):
 # ---------------------------------------------------------------------------
 
 
+def filter_memories_by_score(results, min_score=0.25):
+    """Return scored recall results whose score meets the configured threshold."""
+    try:
+        threshold = float(min_score)
+    except (TypeError, ValueError):
+        threshold = 0.25
+
+    filtered = []
+    for result in results or []:
+        raw_score = result.get("score")
+        if raw_score is None:
+            filtered.append(result)
+            continue
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError):
+            filtered.append(result)
+            continue
+        if score >= threshold:
+            filtered.append(result)
+    return filtered
+
+
 def format_memories(results):
     """Format recall results into human-readable text."""
     if not results:

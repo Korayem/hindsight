@@ -19,6 +19,22 @@ export interface RecallResult {
   text: string;
   type?: string | null;
   mentioned_at?: string | null;
+  score?: number | null;
+}
+
+/** Return scored recall results whose score meets the configured threshold. */
+export function filterMemoriesByScore<T extends object>(
+  results: T[],
+  minScore: number = 0.25
+): T[] {
+  const threshold = Number.isFinite(minScore) ? minScore : 0.25;
+  return results.filter((result) => {
+    const rawScore = (result as { score?: unknown }).score;
+    if (rawScore === undefined || rawScore === null) return true;
+    if (typeof rawScore !== "number" || !Number.isFinite(rawScore)) return true;
+    const score = rawScore;
+    return score >= threshold;
+  });
 }
 
 /** Format recall results into human-readable text for context injection. */
