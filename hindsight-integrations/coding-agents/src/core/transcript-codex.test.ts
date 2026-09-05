@@ -17,7 +17,47 @@ afterEach(() => {
 
 const item = (payload: unknown) => JSON.stringify({ type: "response_item", payload });
 
+const desktopStartup = [
+  "<recommended_plugins>\nUse available tools when relevant.\n</recommended_plugins>",
+  "# AGENTS.md instructions\n<INSTRUCTIONS>Follow project conventions.</INSTRUCTIONS>",
+  "<environment_context>\n<cwd>/example</cwd>\n</environment_context>",
+].join("\n\n");
+
 describe("readCodexTranscript", () => {
+  it("excludes the complete Desktop startup envelope before the first genuine user message", () => {
+    writeFileSync(
+      file,
+      [
+        item({
+          type: "message",
+          role: "user",
+          content: desktopStartup.split("\n\n").map((text) => ({ type: "input_text", text })),
+        }),
+        item({
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "What is 2 + 2?" }],
+        }),
+      ].join("\n")
+    );
+    expect(readCodexTranscript(file)).toEqual([{ role: "user", content: "What is 2 + 2?" }]);
+  });
+
+  it.each([
+    "Explain how AGENTS.md, <recommended_plugins>, and <environment_context> are used.",
+    `<recommended_plugins>\nExample plugin guidance.\n</recommended_plugins>\nWhat does this mean?`,
+    `Please explain this example:\n\n\`\`\`text\n${desktopStartup}\n\`\`\``,
+    `${desktopStartup}\nPlease review the instructions above.`,
+    `${desktopStartup}\nPlease compare this context:\n<environment_context><cwd>/other</cwd></environment_context>`,
+    "<recommended_plugins>\nAn unfinished example",
+  ])("preserves genuine user prose and quoted startup examples: %s", (text) => {
+    writeFileSync(
+      file,
+      item({ type: "message", role: "user", content: [{ type: "input_text", text }] })
+    );
+    expect(readCodexTranscript(file)).toEqual([{ role: "user", content: text }]);
+  });
+
   it("keeps user/assistant text + compact action turns; drops developer/synthetic/reasoning/outputs/injected", () => {
     const lines = [
       // non-response_item line: dropped

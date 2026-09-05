@@ -1,5 +1,5 @@
 /**
- * Codex CLI rollout (JSONL) reader — the Codex counterpart to transcript.ts (Claude). Codex's
+ * Codex CLI/Desktop rollout (JSONL) reader — the Codex counterpart to transcript.ts (Claude). Codex's
  * transcript is a different schema: each line is an event with a `type`; the conversation lives in
  * `type:"response_item"` lines whose `payload` is one of:
  *   - message (role user/assistant/developer; content is `input_text`/`output_text` blocks)
@@ -45,7 +45,22 @@ interface RolloutLine {
  *  message. Retaining that teaches the bank about agent rules, not the user's work — drop it. */
 function isSyntheticUserText(text: string): boolean {
   const s = text.trimStart();
-  return s.startsWith("# AGENTS.md instructions for ") || s.startsWith("<environment_context>");
+  if (s.startsWith("# AGENTS.md instructions for ") || s.startsWith("<environment_context>"))
+    return true;
+
+  // Desktop prepends plugin guidance and omits "for <path>" from the AGENTS heading. Consume
+  // each complete block separately so matching cannot backtrack across trailing user prose.
+  let rest = s;
+  for (const block of [
+    /^<recommended_plugins>.*?<\/recommended_plugins>\s*/s,
+    /^# AGENTS\.md instructions(?: for [^\r\n]+)?\r?\n\s*<INSTRUCTIONS>.*?<\/INSTRUCTIONS>\s*/s,
+    /^<environment_context>.*?<\/environment_context>\s*/s,
+  ]) {
+    const match = block.exec(rest);
+    if (!match) return false;
+    rest = rest.slice(match[0].length);
+  }
+  return rest.length === 0;
 }
 
 /** Join a message payload's text blocks (input_text for user/developer, output_text for assistant). */

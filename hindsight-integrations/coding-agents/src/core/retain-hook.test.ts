@@ -4,10 +4,12 @@ import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveBankId } from "./bank";
+import type { TransportTurn } from "./chat";
 import { type RawConfig, resolveConfig } from "./config";
 import type { HindsightClient } from "./hindsight";
 import { buildRetain, runRetainHook } from "./retain-hook";
-import { memoryCursorStore, type RetainCursorStore } from "./retain-cursor";
+import { fingerprintTurns, memoryCursorStore, type RetainCursorStore } from "./retain-cursor";
+import { readCodexTranscript } from "./transcript-codex";
 import { dcodeAssistantText } from "./transcript-dcode";
 
 /** The Stop event `runRetainHook` reads from fd 0; every other read stays real. */
@@ -42,6 +44,91 @@ afterEach(() => {
 });
 
 describe("buildRetain", () => {
+  it("removes Desktop startup from the retained document, preserves conversation, then appends normally", async () => {
+    const startup =
+      "<recommended_plugins>Use available tools.</recommended_plugins>\n" +
+      "# AGENTS.md instructions\n<INSTRUCTIONS>Follow project conventions.</INSTRUCTIONS>\n" +
+      "<environment_context><cwd>/example</cwd></environment_context>";
+    const message = (role: string, text: string, phase?: string) =>
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role,
+          phase,
+          content: [{ type: role === "user" ? "input_text" : "output_text", text }],
+        },
+      });
+    const lines = [
+      message("user", startup),
+      message("user", "What is 2 + 2?"),
+      message("assistant", "I will calculate it.", "commentary"),
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          name: "calculator",
+          arguments: "{}",
+        },
+      }),
+      message("assistant", "4.", "final_answer"),
+    ];
+    const conversation: TransportTurn[] = [
+      { role: "user", content: "What is 2 + 2?" },
+      { role: "assistant", content: "I will calculate it." },
+      { role: "action", content: "calculator" },
+      { role: "assistant", content: "4." },
+    ];
+    const previouslyRetained: TransportTurn[] = [
+      { role: "user", content: startup },
+      ...conversation,
+    ];
+    const cursors = memoryCursorStore();
+    // A normal Stop after upgrading encounters the old prefix; no historical replay is needed.
+    cursors.write("sess-desktop", {
+      turns: previouslyRetained.length,
+      fingerprint: fingerprintTurns(previouslyRetained, previouslyRetained.length),
+      bank: "test-bank",
+    });
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const args = {
+      harness: "codex",
+      sessionId: "sess-desktop",
+      transcriptPath: file,
+      readTranscript: readCodexTranscript,
+      cursors,
+      client: { retain, bank: "test-bank", supportsIdempotentRetain: async () => true },
+    };
+    writeFileSync(file, lines.join("\n"));
+    await buildRetain(args);
+    expect(retain).toHaveBeenCalledTimes(1);
+    const [content, , documentId, tags, strategy, options] = retain.mock.calls[0];
+    expect(documentId).toBe("conversation:sess-desktop");
+    expect(tags).toEqual(["source:chat", "harness:codex"]);
+    expect(strategy).toBe("conversation");
+    expect(options.updateMode).toBeUndefined();
+    expect(content.split("\n").map((line: string) => JSON.parse(line))).toEqual([
+      {
+        role: "system",
+        content: "REF-ID: conversation:sess-desktop",
+        timestamp: expect.any(String),
+      },
+      ...conversation,
+    ]);
+
+    lines.push(message("user", "And 3 + 3?"), message("assistant", "6."));
+    writeFileSync(file, lines.join("\n"));
+    await buildRetain(args);
+    expect(retain).toHaveBeenCalledTimes(2);
+    expect(retain.mock.calls[1][5].updateMode).toBe("append");
+    expect(retain.mock.calls[1][0].split("\n").map((line: string) => JSON.parse(line))).toEqual([
+      { role: "user", content: "And 3 + 3?" },
+      { role: "assistant", content: "6." },
+    ]);
+    await buildRetain(args);
+    expect(retain).toHaveBeenCalledTimes(2);
+  });
+
   /** Turns retained by one buildRetain call, in order. */
   async function retainedTurns(
     args: Parameters<typeof buildRetain>[0] & { retainSpy: ReturnType<typeof vi.fn> }
