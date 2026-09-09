@@ -44,6 +44,77 @@ afterEach(() => {
 });
 
 describe("buildRetain", () => {
+  it("retains metadata-selected conversation and advances its cursor normally", async () => {
+    const genuine = "# AGENTS.md instructions for /example\nExplain this heading.";
+    const message = (role: string, text: string, kind?: string, phase?: string) =>
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role,
+          phase,
+          content: [{ type: role === "user" ? "input_text" : "output_text", text }],
+          internal_chat_message_metadata_passthrough: kind
+            ? { content_item_kinds: [kind] }
+            : undefined,
+        },
+      });
+    const lines = [
+      message(
+        "user",
+        "<recommended_plugins>guidance</recommended_plugins>",
+        "plugins.recommendations"
+      ),
+      message("user", genuine, "user.text"),
+      message("assistant", "I will check.", undefined, "commentary"),
+      JSON.stringify({
+        type: "response_item",
+        payload: { type: "function_call", name: "calculator", arguments: "{}" },
+      }),
+      JSON.stringify({
+        type: "response_item",
+        payload: { type: "function_call_output", output: "raw output" },
+      }),
+      message("assistant", "Done.", undefined, "final_answer"),
+    ];
+    const retain = vi.fn().mockResolvedValue(undefined);
+    const args = {
+      harness: "codex",
+      sessionId: "sess-origin",
+      transcriptPath: file,
+      readTranscript: readCodexTranscript,
+      cursors: memoryCursorStore(),
+      client: { retain, bank: "test-bank", supportsIdempotentRetain: async () => true },
+    };
+    writeFileSync(file, lines.join("\n"));
+    await buildRetain(args);
+    expect(retain).toHaveBeenCalledTimes(1);
+    expect(retain.mock.calls[0][2]).toBe("conversation:sess-origin");
+    expect(retain.mock.calls[0][5].updateMode).toBeUndefined();
+    expect(retain.mock.calls[0][0].split("\n").map((line: string) => JSON.parse(line))).toEqual([
+      {
+        role: "system",
+        content: "REF-ID: conversation:sess-origin",
+        timestamp: expect.any(String),
+      },
+      { role: "user", content: genuine },
+      { role: "assistant", content: "I will check." },
+      { role: "action", content: "calculator" },
+      { role: "assistant", content: "Done." },
+    ]);
+    await buildRetain(args);
+    expect(retain).toHaveBeenCalledTimes(1);
+    lines.push(message("user", "Next question", "user.text"), message("assistant", "Next answer"));
+    writeFileSync(file, lines.join("\n"));
+    await buildRetain(args);
+    expect(retain).toHaveBeenCalledTimes(2);
+    expect(retain.mock.calls[1][5].updateMode).toBe("append");
+    expect(retain.mock.calls[1][0].split("\n").map((line: string) => JSON.parse(line))).toEqual([
+      { role: "user", content: "Next question" },
+      { role: "assistant", content: "Next answer" },
+    ]);
+  });
+
   it("removes Desktop startup from the retained document, preserves conversation, then appends normally", async () => {
     const startup =
       "<recommended_plugins>Use available tools.</recommended_plugins>\n" +

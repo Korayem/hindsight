@@ -32,6 +32,7 @@ interface Payload {
   type?: string;
   role?: string;
   content?: ContentItem[];
+  internal_chat_message_metadata_passthrough?: { content_item_kinds?: unknown };
   name?: string;
   arguments?: string;
   output?: string;
@@ -63,10 +64,19 @@ function isSyntheticUserText(text: string): boolean {
   return rest.length === 0;
 }
 
+const startupKinds = [
+  "plugins.recommendations",
+  "agents_md.instructions",
+  "environments.environment_context",
+];
+
 /** Join a message payload's text blocks (input_text for user/developer, output_text for assistant). */
-function messageText(payload: Payload): string {
+function messageText(payload: Payload, kinds?: string[]): string {
   return (payload.content || [])
-    .filter((c) => c && typeof c.text === "string")
+    .filter(
+      (c, index) =>
+        c && typeof c.text === "string" && (!kinds || !startupKinds.includes(kinds[index]))
+    )
     .map((c) => c.text as string)
     .join("\n");
 }
@@ -95,9 +105,20 @@ export function readCodexTranscript(path: string): TransportTurn[] {
     if (p.type === "message") {
       // `developer` messages are Codex's system prompt + OUR injected hook context → drop entirely.
       if (p.role !== "user" && p.role !== "assistant") continue;
-      const text = stripInjectedMemory(messageText(p)).trim();
+      // Origin labels distinguish injected startup from genuine user-authored markup. Trust
+      // them only as a complete aligned list, before dropping images/non-text content blocks.
+      const origins = p.internal_chat_message_metadata_passthrough?.content_item_kinds;
+      const kinds =
+        p.role === "user" &&
+        Array.isArray(p.content) &&
+        Array.isArray(origins) &&
+        origins.length === p.content.length &&
+        origins.every((kind) => typeof kind === "string" && kind.length > 0)
+          ? origins
+          : undefined;
+      const text = stripInjectedMemory(messageText(p, kinds)).trim();
       if (!text) continue;
-      if (p.role === "user" && isSyntheticUserText(text)) continue;
+      if (p.role === "user" && !kinds && isSyntheticUserText(text)) continue;
       turns.push({ role: p.role, content: text });
     } else if (p.type === "function_call" && typeof p.name === "string") {
       let input: unknown;
